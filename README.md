@@ -14,7 +14,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/main/i
 
 | 项目 | 要求 |
 | --- | --- |
-| 系统 | Ubuntu 22.04+ / Debian 12+ |
+| 最低支持系统 | Ubuntu 22.04+ / Debian 12+ |
+| 推荐系统 | Ubuntu 24.04+ / Debian 12 |
 | 包管理器 | `apt-get` |
 | 架构 | `x86_64` / `aarch64` |
 | 引导方式 | 建议使用 GRUB |
@@ -22,7 +23,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/main/i
 
 不建议在树莓派、NanoPi 等依赖 U-Boot 或厂商定制内核链路的设备上使用。此类设备的内核安装和启动流程通常与通用 Debian/Ubuntu VPS 不一致。
 
-本项目当前内核主线为 Linux 7.x。安装内核时脚本会拒绝过旧系统，避免因用户态、initramfs 或引导链路过旧导致启动失败或 kernel panic。旧系统仍可使用状态检查、网络调优、清空优化和卸载功能。
+本项目当前内核主线为 Linux 7.x。安装内核时脚本会按最低支持系统拦截过旧环境，避免因用户态、initramfs 或引导链路过旧导致启动失败或 kernel panic。推荐系统是更稳妥的部署选择；旧系统仍可使用状态检查、网络调优、清空优化和卸载功能。
 
 ## 菜单功能
 
