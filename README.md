@@ -41,6 +41,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/main/i
 9. 卸载 BBR 内核
 10. BBR v3 智能带宽优化
 11. 清空网络优化配置
+12. BBR v3 疯批模式（极限测速挑战）
 ```
 
 常用流程：
@@ -51,7 +52,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/main/i
 4. 按需选择 `4` 到 `7` 设置队列算法。
 5. 亚太线路机器可选择 `8` 写入 TCP 收发窗口与空闲慢启动调优。
 6. 不确定线路参数时可选择 `10` 自动测速并按带宽档位计算 TCP 缓冲区。
-7. 需要撤回调优时可选择 `11` 清空脚本写入的网络优化配置。
+7. 做自有链路极限测速挑战时可选择 `12` 写入激进冲速率参数。
+8. 需要撤回调优时可选择 `11` 清空脚本写入的网络优化配置。
 
 ## 内核与 BBR 策略
 
@@ -223,6 +225,46 @@ net.ipv4.tcp_slow_start_after_idle = 0
 /etc/sysctl.d/99-joeyblog.conf
 ```
 
+## BBR v3 疯批模式
+
+运行脚本后选择：
+
+```text
+12. BBR v3 疯批模式（极限测速挑战）
+```
+
+该模式只面向自有链路的极限测速挑战，不建议日常使用。目标是尽量压榨单向吞吐和跑满带宽上限，会主动牺牲重传率、延迟抖动、排队延迟、连接稳定性、交互体验和流量公平性。
+
+脚本会强制启用 `bbr` 拥塞控制和 `fq` 队列算法，并立即尝试替换当前默认路由出口网卡的 root qdisc。
+
+写入参数：
+
+```text
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+net.core.rmem_max = 1073741824
+net.core.wmem_max = 1073741824
+net.core.optmem_max = 1073741824
+net.core.netdev_max_backlog = 1000000
+net.core.somaxconn = 65535
+net.ipv4.tcp_wmem = 4096 1048576 1073741824
+net.ipv4.tcp_rmem = 4096 1048576 1073741824
+net.ipv4.tcp_limit_output_bytes = 268435456
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_notsent_lowat = 4294967295
+net.ipv4.tcp_autocorking = 0
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_moderate_rcvbuf = 1
+net.ipv4.tcp_ecn = 0
+```
+
+脚本还会把当前默认出口网卡的运行态 `txqueuelen` 拉高到 `100000`，让测速时本机发送队列更激进。该项不是 sysctl 参数，不会写入 `/etc/sysctl.d/99-joeyblog.conf`。
+
+其中核心参数应用失败会中止；不同内核可能不支持部分附加参数，脚本会尽量写入，失败的附加项不会阻断整个模式。
+
 ## 清空网络优化配置
 
 运行脚本后选择：
@@ -235,10 +277,19 @@ net.ipv4.tcp_slow_start_after_idle = 0
 
 - `net.core.default_qdisc`
 - `net.ipv4.tcp_congestion_control`
-- `net.core.rmem_max` / `net.core.wmem_max`
+- `net.core.rmem_max` / `net.core.wmem_max` / `net.core.optmem_max`
+- `net.core.netdev_max_backlog` / `net.core.somaxconn`
 - `net.ipv4.tcp_rmem` / `net.ipv4.tcp_wmem`
 - `net.ipv4.tcp_limit_output_bytes`
 - `net.ipv4.tcp_slow_start_after_idle`
+- `net.ipv4.tcp_notsent_lowat`
+- `net.ipv4.tcp_autocorking`
+- `net.ipv4.tcp_no_metrics_save`
+- `net.ipv4.tcp_mtu_probing`
+- `net.ipv4.tcp_fastopen`
+- `net.ipv4.tcp_window_scaling`
+- `net.ipv4.tcp_moderate_rcvbuf`
+- `net.ipv4.tcp_ecn`
 
 同时删除：
 

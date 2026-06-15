@@ -140,10 +140,21 @@ clean_smart_tuning_conf() {
     sudo touch "$SYSCTL_CONF"
     sudo sed -i '/net.core.rmem_max/d' "$SYSCTL_CONF"
     sudo sed -i '/net.core.wmem_max/d' "$SYSCTL_CONF"
+    sudo sed -i '/net.core.optmem_max/d' "$SYSCTL_CONF"
+    sudo sed -i '/net.core.netdev_max_backlog/d' "$SYSCTL_CONF"
+    sudo sed -i '/net.core.somaxconn/d' "$SYSCTL_CONF"
     sudo sed -i '/net.ipv4.tcp_wmem/d' "$SYSCTL_CONF"
     sudo sed -i '/net.ipv4.tcp_rmem/d' "$SYSCTL_CONF"
     sudo sed -i '/net.ipv4.tcp_limit_output_bytes/d' "$SYSCTL_CONF"
     sudo sed -i '/net.ipv4.tcp_slow_start_after_idle/d' "$SYSCTL_CONF"
+    sudo sed -i '/net.ipv4.tcp_notsent_lowat/d' "$SYSCTL_CONF"
+    sudo sed -i '/net.ipv4.tcp_autocorking/d' "$SYSCTL_CONF"
+    sudo sed -i '/net.ipv4.tcp_no_metrics_save/d' "$SYSCTL_CONF"
+    sudo sed -i '/net.ipv4.tcp_mtu_probing/d' "$SYSCTL_CONF"
+    sudo sed -i '/net.ipv4.tcp_fastopen/d' "$SYSCTL_CONF"
+    sudo sed -i '/net.ipv4.tcp_window_scaling/d' "$SYSCTL_CONF"
+    sudo sed -i '/net.ipv4.tcp_moderate_rcvbuf/d' "$SYSCTL_CONF"
+    sudo sed -i '/net.ipv4.tcp_ecn/d' "$SYSCTL_CONF"
 }
 
 # 函数：清理亚太线路调优配置
@@ -571,6 +582,100 @@ apply_smart_bandwidth_tuning() {
     echo -e "\033[36m  上传/下载：               \033[1;32m${upload_mbps}/${download_mbps} Mbit/s\033[0m"
     echo -e "\033[36m  推荐缓冲区：             \033[1;32m${buffer_mb}MB\033[0m"
     echo -e "\033[36m  内存保护上限：           \033[1;32m${cap_mb}MB\033[0m"
+    echo -e "\033[36m  队列算法：               \033[1;32m$(sysctl -n net.core.default_qdisc)\033[0m"
+    echo -e "\033[36m  拥塞控制：               \033[1;32m$(sysctl -n net.ipv4.tcp_congestion_control)\033[0m"
+    echo -e "\033[36m  tcp_wmem:                 \033[1;32m$(sysctl -n net.ipv4.tcp_wmem)\033[0m"
+    echo -e "\033[36m  tcp_rmem:                 \033[1;32m$(sysctl -n net.ipv4.tcp_rmem)\033[0m"
+    echo -e "\033[36m  tcp_limit_output_bytes:   \033[1;32m$(sysctl -n net.ipv4.tcp_limit_output_bytes)\033[0m"
+    echo -e "\033[36m  tcp_slow_start_after_idle:\033[1;32m $(sysctl -n net.ipv4.tcp_slow_start_after_idle)\033[0m"
+}
+
+# 函数：应用极限测速挑战模式
+apply_extreme_speedtest_tuning() {
+    local extreme_algo="bbr"
+    local extreme_qdisc="fq"
+    local buffer_bytes="1073741824"
+    local output_bytes="268435456"
+    local backlog="1000000"
+    local txqueuelen="100000"
+    local iface
+
+    echo -e "\033[36m正在应用 BBR v3 疯批模式...\033[0m"
+    echo -e "\033[33m该模式只适合自有链路极限测速，不适合日常使用。\033[0m"
+    echo -e "\033[33m它会优先压榨吞吐，可能显著增加重传、抖动、排队延迟和内存占用。\033[0m"
+
+    load_qdisc_module "$extreme_qdisc"
+
+    if sudo sysctl -w net.core.default_qdisc="$extreme_qdisc" > /dev/null \
+        && sudo sysctl -w net.ipv4.tcp_congestion_control="$extreme_algo" > /dev/null; then
+        echo -e "\033[1;32m✔ 已启用 BBR + FQ\033[0m"
+    else
+        echo -e "\033[31m✘ BBR + FQ 启用失败，请确认当前内核支持 BBR 和 fq。\033[0m"
+        return 1
+    fi
+
+    apply_qdisc_to_active_interfaces "$extreme_qdisc" || true
+
+    if ensure_iproute2_tools; then
+        while IFS= read -r iface; do
+            [[ -z "$iface" ]] && continue
+            if sudo ip link set dev "$iface" txqueuelen "$txqueuelen" 2>/dev/null; then
+                echo -e "\033[1;32m✔ 当前网卡 $iface 的 txqueuelen 已拉高到 $txqueuelen\033[0m"
+            else
+                echo -e "\033[33m⚠ 当前网卡 $iface 设置 txqueuelen 失败，继续应用 TCP 参数\033[0m"
+            fi
+        done < <(get_default_route_interfaces)
+    fi
+
+    if sudo sysctl -w net.core.rmem_max="$buffer_bytes" > /dev/null \
+        && sudo sysctl -w net.core.wmem_max="$buffer_bytes" > /dev/null \
+        && sudo sysctl -w net.ipv4.tcp_wmem="4096 1048576 $buffer_bytes" > /dev/null \
+        && sudo sysctl -w net.ipv4.tcp_rmem="4096 1048576 $buffer_bytes" > /dev/null \
+        && sudo sysctl -w net.ipv4.tcp_limit_output_bytes="$output_bytes" > /dev/null \
+        && sudo sysctl -w net.ipv4.tcp_slow_start_after_idle="0" > /dev/null; then
+        echo -e "\033[1;32m✔ 核心极限测速参数已立即生效\033[0m"
+    else
+        echo -e "\033[31m✘ 疯批模式核心参数应用失败，请检查当前内核是否支持这些 sysctl 项。\033[0m"
+        return 1
+    fi
+
+    sudo sysctl -w net.core.netdev_max_backlog="$backlog" > /dev/null 2>&1 || true
+    sudo sysctl -w net.core.optmem_max="$buffer_bytes" > /dev/null 2>&1 || true
+    sudo sysctl -w net.core.somaxconn="65535" > /dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.tcp_notsent_lowat="4294967295" > /dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.tcp_autocorking="0" > /dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.tcp_no_metrics_save="1" > /dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.tcp_mtu_probing="1" > /dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.tcp_fastopen="3" > /dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.tcp_window_scaling="1" > /dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.tcp_moderate_rcvbuf="1" > /dev/null 2>&1 || true
+    sudo sysctl -w net.ipv4.tcp_ecn="0" > /dev/null 2>&1 || true
+
+    clean_sysctl_conf
+    clean_smart_tuning_conf
+    {
+        echo "net.core.default_qdisc=$extreme_qdisc"
+        echo "net.ipv4.tcp_congestion_control=$extreme_algo"
+        echo "net.core.rmem_max = $buffer_bytes"
+        echo "net.core.wmem_max = $buffer_bytes"
+        echo "net.core.optmem_max = $buffer_bytes"
+        echo "net.core.netdev_max_backlog = $backlog"
+        echo "net.core.somaxconn = 65535"
+        echo "net.ipv4.tcp_wmem = 4096 1048576 $buffer_bytes"
+        echo "net.ipv4.tcp_rmem = 4096 1048576 $buffer_bytes"
+        echo "net.ipv4.tcp_limit_output_bytes = $output_bytes"
+        echo "net.ipv4.tcp_slow_start_after_idle = 0"
+        echo "net.ipv4.tcp_notsent_lowat = 4294967295"
+        echo "net.ipv4.tcp_autocorking = 0"
+        echo "net.ipv4.tcp_no_metrics_save = 1"
+        echo "net.ipv4.tcp_mtu_probing = 1"
+        echo "net.ipv4.tcp_fastopen = 3"
+        echo "net.ipv4.tcp_window_scaling = 1"
+        echo "net.ipv4.tcp_moderate_rcvbuf = 1"
+        echo "net.ipv4.tcp_ecn = 0"
+    } | sudo tee -a "$SYSCTL_CONF" > /dev/null
+
+    echo -e "\033[1;32m✔ 疯批模式配置已永久写入：$SYSCTL_CONF\033[0m"
     echo -e "\033[36m  队列算法：               \033[1;32m$(sysctl -n net.core.default_qdisc)\033[0m"
     echo -e "\033[36m  拥塞控制：               \033[1;32m$(sysctl -n net.ipv4.tcp_congestion_control)\033[0m"
     echo -e "\033[36m  tcp_wmem:                 \033[1;32m$(sysctl -n net.ipv4.tcp_wmem)\033[0m"
@@ -1036,8 +1141,9 @@ echo -e "\033[33m 8. 🌏 亚太机器 TCP 调优\033[0m"
 echo -e "\033[33m 9. 🗑️  卸载 BBR 内核\033[0m"
 echo -e "\033[33m10. 🧠 BBR v3 智能带宽优化\033[0m"
 echo -e "\033[33m11. 🧹 清空网络优化配置\033[0m"
+echo -e "\033[33m12. 🧨 BBR v3 疯批模式（极限测速挑战）\033[0m"
 print_separator
-echo -n -e "\033[36m请选择一个操作 (1-11) (｡･ω･｡): \033[0m"
+echo -n -e "\033[36m请选择一个操作 (1-12) (｡･ω･｡): \033[0m"
 read -r ACTION
 
 case "$ACTION" in
@@ -1138,7 +1244,11 @@ case "$ACTION" in
         echo -e "\033[1;32m(๑•̀ㅂ•́)و✧ 您选择了清空网络优化配置！\033[0m"
         clear_network_optimizations
         ;;
+    12)
+        echo -e "\033[1;32m(╯°□°）╯ 您选择了 BBR v3 疯批模式！\033[0m"
+        apply_extreme_speedtest_tuning
+        ;;
     *)
-        echo -e "\033[31m(￣▽￣)ゞ 无效的选项，请输入 1-11 之间的数字哦~\033[0m"
+        echo -e "\033[31m(￣▽￣)ゞ 无效的选项，请输入 1-12 之间的数字哦~\033[0m"
         ;;
 esac
