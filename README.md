@@ -8,7 +8,7 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/main/install.sh)
 ```
 
-脚本会自动识别当前系统架构，从本仓库 GitHub Releases 下载匹配的 BBRv3 内核 `.deb` 包，并提供安装、指定版本安装、状态检查、加速模式切换和卸载功能。
+脚本会自动识别当前系统架构，从本仓库 GitHub Releases 下载匹配的 BBRv3 内核 `.deb` 包，并提供安装、指定版本安装、状态检查、加速模式切换和卸载功能。安装内核时可选择标准 BBRv3 或 BBRv3 Max 极限内核。
 
 ## 支持环境
 
@@ -46,7 +46,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/main/i
 
 常用流程：
 
-1. 选择 `1` 安装或更新 BBRv3 内核。
+1. 选择 `1` 安装或更新 BBRv3 内核，并按提示选择标准版或 Max 极限版。
 2. 按提示重启系统。
 3. 重新运行脚本，选择 `3` 检查 BBRv3 状态。
 4. 按需选择 `4` 到 `7` 设置队列算法。
@@ -90,7 +90,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/main/i
 
 - 检查系统是否为 Debian/Ubuntu。
 - 检查架构是否为 `x86_64` 或 `aarch64`。
-- 从 GitHub Releases 获取当前架构最新版本。
+- 让用户选择标准 BBRv3 或 BBRv3 Max 极限内核。
+- 从 GitHub Releases 获取当前架构和内核类型匹配的最新版本。
 - 下载非 debug 的内核 `.deb` 包。
 - 安装新内核并更新引导配置。
 - 提示是否重启。
@@ -110,14 +111,18 @@ bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/main/i
 2. 指定版本安装
 ```
 
-脚本会列出当前架构可用的 release tag，并按编号安装指定版本。
+脚本会先让用户选择标准 BBRv3 或 BBRv3 Max，再列出当前架构可用的 release tag，并按编号安装指定版本。
 
 release tag 格式：
 
 ```text
 x86_64-7.0.11
 arm64-7.0.11
+x86_64-7.0.11-max
+arm64-7.0.11-max
 ```
+
+其中不带 `-max` 的 tag 是标准 BBRv3 内核，带 `-max` 的 tag 是 BBRv3 Max 极限内核。Max 版会弱化/关闭 BBRv3 的降速、ECN、loss/inflight 收敛等控制路径，只适合自有链路极限测速挑战，不建议日常生产使用。
 
 ## 检查 BBRv3 状态
 

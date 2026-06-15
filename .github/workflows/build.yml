@@ -53,13 +53,15 @@ jobs:
 
           missing=0
           for arch in x86_64 arm64; do
-            tag="$arch-$version"
-            if gh release view "$tag" >/dev/null 2>&1; then
-              echo "$tag already exists."
-            else
-              echo "$tag is missing."
-              missing=1
-            fi
+            for suffix in "" "-max"; do
+              tag="$arch-$version$suffix"
+              if gh release view "$tag" >/dev/null 2>&1; then
+                echo "$tag already exists."
+              else
+                echo "$tag is missing."
+                missing=1
+              fi
+            done
           done
 
           if [ "$missing" -eq 0 ]; then
@@ -90,8 +92,28 @@ jobs:
         include:
           - arch: x86_64
             runs_on: ubuntu-latest
+            profile: standard
+            profile_name: BBRv3
+            release_suffix: ""
+            localversion: -joeyblog-bbrv3
           - arch: arm64
             runs_on: ubuntu-24.04-arm
+            profile: standard
+            profile_name: BBRv3
+            release_suffix: ""
+            localversion: -joeyblog-bbrv3
+          - arch: x86_64
+            runs_on: ubuntu-latest
+            profile: max
+            profile_name: BBRv3 Max
+            release_suffix: -max
+            localversion: -joeyblog-bbrv3-max
+          - arch: arm64
+            runs_on: ubuntu-24.04-arm
+            profile: max
+            profile_name: BBRv3 Max
+            release_suffix: -max
+            localversion: -joeyblog-bbrv3-max
     runs-on: ${{ matrix.runs_on }}
     env:
       ARCH: ${{ matrix.arch }}
@@ -100,13 +122,13 @@ jobs:
       - name: 检查是否已发布
         id: check_release
         run: |
-          tag="${{ matrix.arch }}-${{ env.KERNEL_VERSION }}"
+          tag="${{ matrix.arch }}-${{ env.KERNEL_VERSION }}${{ matrix.release_suffix }}"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "BUILD_NEEDED=false" >> "$GITHUB_ENV"
             echo "$tag already exists; skipping build."
           else
             echo "BUILD_NEEDED=true" >> "$GITHUB_ENV"
-            echo "$tag does not exist; building latest kernel with pinned BBRv3 patch."
+            echo "$tag does not exist; building latest kernel with ${{ matrix.profile_name }}."
           fi
 
       - name: 检出代码
@@ -143,14 +165,24 @@ jobs:
           bash "$GITHUB_WORKSPACE/scripts/apply-bbrv3-port.sh"
           grep -n "BBR_VERSION" net/ipv4/tcp_bbr.c
 
+      - name: 应用 BBRv3 Max 极限内核配置
+        if: env.BUILD_NEEDED == 'true' && matrix.profile == 'max'
+        working-directory: ./kernel/linux
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/apply-bbrv3-max-profile.sh"
+
       - name: 编译声明
         if: env.BUILD_NEEDED == 'true'
         working-directory: ./kernel/linux
         run: |
           grep -v "MODULE_DESCRIPTION" net/ipv4/tcp_bbr.c > net/ipv4/tcp_bbr.c.tmp
           mv net/ipv4/tcp_bbr.c.tmp net/ipv4/tcp_bbr.c
-          
-          echo 'MODULE_DESCRIPTION("TCP BBR v3 (Bottleneck Bandwidth and RTT) - Compiled & Optimized by Joey");' >> net/ipv4/tcp_bbr.c
+
+          if [ "${{ matrix.profile }}" = "max" ]; then
+            echo 'MODULE_DESCRIPTION("TCP BBR v3 Max - extreme throughput profile by Joey");' >> net/ipv4/tcp_bbr.c
+          else
+            echo 'MODULE_DESCRIPTION("TCP BBR v3 (Bottleneck Bandwidth and RTT) - Compiled & Optimized by Joey");' >> net/ipv4/tcp_bbr.c
+          fi
           
           tail -n 5 net/ipv4/tcp_bbr.c
 
@@ -171,10 +203,10 @@ jobs:
           bash "$GITHUB_WORKSPACE/scripts/prepare-kernel-config.sh" "${{ matrix.arch }}"
 
       - name: 上传最终配置文件
-        if: env.BUILD_NEEDED == 'true'
+        if: env.BUILD_NEEDED == 'true' && matrix.profile == 'standard'
         uses: actions/upload-artifact@v4
         with:
-          name: config-${{ matrix.arch }}-${{ env.KERNEL_VERSION }}
+          name: config-${{ matrix.arch }}-${{ matrix.profile }}-${{ env.KERNEL_VERSION }}
           path: ./build-configs/${{ matrix.arch }}*.config
 
       - name: 构建内核 Debian 包
@@ -182,9 +214,9 @@ jobs:
         working-directory: ./kernel/linux
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            make ARCH=arm64 bindeb-pkg -j$(nproc) LOCALVERSION=-joeyblog-bbrv3 KDEB_COMPRESS=gzip skipdbg=true
+            make ARCH=arm64 bindeb-pkg -j$(nproc) LOCALVERSION=${{ matrix.localversion }} KDEB_COMPRESS=gzip skipdbg=true
           else
-            make bindeb-pkg -j$(nproc) LOCALVERSION=-joeyblog-bbrv3 KDEB_COMPRESS=gzip skipdbg=true
+            make bindeb-pkg -j$(nproc) LOCALVERSION=${{ matrix.localversion }} KDEB_COMPRESS=gzip skipdbg=true
           fi
 
       - name: 检查 deb 包
@@ -200,14 +232,14 @@ jobs:
       - name: 发布前复查是否已发布
         if: env.BUILD_NEEDED == 'true'
         run: |
-          tag="${{ matrix.arch }}-${KERNEL_VERSION}"
+          tag="${{ matrix.arch }}-${KERNEL_VERSION}${{ matrix.release_suffix }}"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "PUBLISH_NEEDED=false" >> "$GITHUB_ENV"
             echo "$tag was published while this job was running; skipping upload and release."
           else
             echo "PUBLISH_NEEDED=true" >> "$GITHUB_ENV"
             mkdir -p ./publish-markers
-            touch "./publish-markers/${{ matrix.arch }}"
+            touch "./publish-markers/${{ matrix.arch }}-${{ matrix.profile }}"
             echo "$tag still missing; publishing this build."
           fi
 
@@ -215,25 +247,25 @@ jobs:
         if: env.BUILD_NEEDED == 'true' && env.PUBLISH_NEEDED == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: publish-${{ matrix.arch }}-${{ env.KERNEL_VERSION }}
-          path: ./publish-markers/${{ matrix.arch }}
+          name: publish-${{ matrix.arch }}-${{ matrix.profile }}-${{ env.KERNEL_VERSION }}
+          path: ./publish-markers/${{ matrix.arch }}-${{ matrix.profile }}
 
       - name: 上传 deb 包
         if: env.BUILD_NEEDED == 'true' && env.PUBLISH_NEEDED == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: deb-${{ matrix.arch }}
+          name: deb-${{ matrix.arch }}-${{ matrix.profile }}
           path: ./kernel/linux-*.deb
 
       - name: 发布到 GitHub Release
         if: env.BUILD_NEEDED == 'true' && env.PUBLISH_NEEDED == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ matrix.arch }}-${{ env.KERNEL_VERSION }}
+          tag_name: ${{ matrix.arch }}-${{ env.KERNEL_VERSION }}${{ matrix.release_suffix }}
           files: |
             ./kernel/linux-*.deb
             ./build-configs/${{ matrix.arch }}-${{ env.KERNEL_VERSION }}.config
-          body: "带有 BBRv3 的最新内核，适用于 ${{ matrix.arch }} 架构。Compiled & Optimized by Joey."
+          body: "带有 ${{ matrix.profile_name }} 的最新内核，适用于 ${{ matrix.arch }} 架构。Compiled & Optimized by Joey."
 
   update-config-baseline:
     needs: [preflight, build]
@@ -247,7 +279,7 @@ jobs:
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          pattern: config-*
+          pattern: config-*-standard-*
           path: ./generated-configs
           merge-multiple: true
 
@@ -255,7 +287,7 @@ jobs:
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          pattern: publish-*
+          pattern: publish-*-standard-*
           path: ./publish-markers
           merge-multiple: true
 
@@ -272,10 +304,10 @@ jobs:
             exit 0
           fi
 
-          if [ -f ./publish-markers/x86_64 ] && [ -f ./generated-configs/x86_64.config ]; then
+          if [ -f ./publish-markers/x86_64-standard ] && [ -f ./generated-configs/x86_64.config ]; then
             cp ./generated-configs/x86_64.config ./x86-64.config
           fi
-          if [ -f ./publish-markers/arm64 ] && [ -f ./generated-configs/arm64.config ]; then
+          if [ -f ./publish-markers/arm64-standard ] && [ -f ./generated-configs/arm64.config ]; then
             cp ./generated-configs/arm64.config ./arm64.config
           fi
 

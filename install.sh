@@ -941,7 +941,76 @@ ask_to_save() {
 
 # 函数：获取已安装的 joeyblog 内核版本
 get_installed_version() {
-    dpkg -l | grep "linux-image" | grep "joeyblog" | awk '{print $2}' | sed 's/linux-image-//' | head -n 1
+    local profile="${1:-any}"
+    local versions
+
+    versions=$(dpkg -l 2>/dev/null | awk '/^ii/ && $2 ~ /^linux-image-/ && $2 ~ /joeyblog/ {sub(/^linux-image-/, "", $2); print $2}')
+    case "$profile" in
+        standard)
+            echo "$versions" | grep -E -- '-joeyblog-bbrv3$' | sort -V | tail -n 1
+            ;;
+        max)
+            echo "$versions" | grep -E -- '-joeyblog-bbrv3-max$' | sort -V | tail -n 1
+            ;;
+        *)
+            echo "$versions" | sort -V | tail -n 1
+            ;;
+    esac
+}
+
+get_arch_filter() {
+    if [[ "$ARCH" == "aarch64" ]]; then
+        echo "arm64"
+    elif [[ "$ARCH" == "x86_64" ]]; then
+        echo "x86_64"
+    fi
+}
+
+get_profile_label() {
+    case "${1:-standard}" in
+        max) echo "BBR v3 Max（极限内核）" ;;
+        *) echo "BBR v3 标准版" ;;
+    esac
+}
+
+get_expected_installed_version() {
+    local tag="$1"
+    local profile="${2:-standard}"
+    local version
+
+    version="${tag#x86_64-}"
+    version="${version#arm64-}"
+    version="${version%-max}"
+
+    if [[ "$profile" == "max" ]]; then
+        echo "${version}-joeyblog-bbrv3-max"
+    else
+        echo "${version}-joeyblog-bbrv3"
+    fi
+}
+
+select_kernel_profile() {
+    KERNEL_PROFILE="standard"
+
+    echo -e "\033[36m请选择要安装的内核类型：\033[0m"
+    echo -e "\033[33m 1. BBR v3 标准版（推荐日常使用）\033[0m"
+    echo -e "\033[33m 2. BBR v3 Max 极限版（只为暴力测速，不管稳定性）\033[0m"
+    echo -n -e "\033[36m请输入选项 (1-2，默认 1): \033[0m"
+    read -r PROFILE_CHOICE
+
+    case "${PROFILE_CHOICE:-1}" in
+        1)
+            KERNEL_PROFILE="standard"
+            ;;
+        2)
+            KERNEL_PROFILE="max"
+            echo -e "\033[31m警告：BBR v3 Max 会弱化/关闭降速与惩罚逻辑，只适合极限测速挑战，不建议日常生产使用。\033[0m"
+            ;;
+        *)
+            echo -e "\033[31m输入无效，取消安装。\033[0m"
+            return 1
+            ;;
+    esac
 }
 
 # 函数：智能更新引导加载程序
@@ -1003,9 +1072,15 @@ install_packages() {
 
 # 函数：检查并安装最新版本
 install_latest_version() {
-    assert_supported_kernel_install_system || return 1
+    local profile="${1:-standard}"
+    local profile_label
+    local arch_filter
+    local expected_version
 
-    echo -e "\033[36m正在从 GitHub 获取最新版本信息...\033[0m"
+    assert_supported_kernel_install_system || return 1
+    profile_label=$(get_profile_label "$profile")
+
+    echo -e "\033[36m正在从 GitHub 获取 ${profile_label} 最新版本信息...\033[0m"
     BASE_URL="https://api.github.com/repos/byJoey/Actions-bbr-v3/releases"
     RELEASE_DATA=$(gh_api_get "$BASE_URL")
     if [[ -z "$RELEASE_DATA" ]]; then
@@ -1014,27 +1089,30 @@ install_latest_version() {
     fi
     check_release_api_response "$RELEASE_DATA" || return 1
 
-    local ARCH_FILTER=""
-    [[ "$ARCH" == "aarch64" ]] && ARCH_FILTER="arm64"
-    [[ "$ARCH" == "x86_64" ]] && ARCH_FILTER="x86_64"
-
-    LATEST_TAG_NAME=$(echo "$RELEASE_DATA" | jq -r --arg filter "$ARCH_FILTER" 'map(select(.tag_name | test($filter; "i"))) | sort_by(.published_at) | .[-1].tag_name')
+    arch_filter=$(get_arch_filter)
+    LATEST_TAG_NAME=$(echo "$RELEASE_DATA" | jq -r --arg filter "$arch_filter" --arg profile "$profile" '
+      map(
+        select(.tag_name | test("^" + $filter + "-[0-9]"; "i"))
+        | select(if $profile == "max" then (.tag_name | endswith("-max")) else ((.tag_name | endswith("-max")) | not) end)
+      )
+      | sort_by(.published_at)
+      | .[-1].tag_name
+    ')
 
     if [[ -z "$LATEST_TAG_NAME" || "$LATEST_TAG_NAME" == "null" ]]; then
-        echo -e "\033[31m未找到适合当前架构 ($ARCH) 的最新版本。\033[0m"
+        echo -e "\033[31m未找到适合当前架构 ($ARCH) 的 ${profile_label} 最新版本。\033[0m"
         return 1
     fi
     echo -e "\033[36m检测到最新版本：\033[0m\033[1;32m$LATEST_TAG_NAME\033[0m"
 
-    INSTALLED_VERSION=$(get_installed_version)
+    INSTALLED_VERSION=$(get_installed_version "$profile")
     echo -e "\033[36m当前已安装版本：\033[0m\033[1;32m${INSTALLED_VERSION:-"未安装"}\033[0m"
 
-    CORE_LATEST_VERSION="${LATEST_TAG_NAME#x86_64-}"
-    CORE_LATEST_VERSION="${CORE_LATEST_VERSION#arm64-}"
+    expected_version=$(get_expected_installed_version "$LATEST_TAG_NAME" "$profile")
 
-    if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$CORE_LATEST_VERSION"* ]]; then
+    if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$expected_version" ]]; then
         # 修复了此处的颜文字，将反引号 ` 替换为单引号 '
-        echo -e "\033[1;32m(o'▽'o) 您已安装最新版本，无需更新！\033[0m"
+        echo -e "\033[1;32m(o'▽'o) 您已安装最新 ${profile_label}，无需更新！\033[0m"
         return 0
     fi
 
@@ -1056,7 +1134,12 @@ install_latest_version() {
 
 # 函数：安装指定版本
 install_specific_version() {
+    local profile="${1:-standard}"
+    local profile_label
+    local arch_filter
+
     assert_supported_kernel_install_system || return 1
+    profile_label=$(get_profile_label "$profile")
 
     BASE_URL="https://api.github.com/repos/byJoey/Actions-bbr-v3/releases"
     RELEASE_DATA=$(gh_api_get "$BASE_URL")
@@ -1066,18 +1149,20 @@ install_specific_version() {
     fi
     check_release_api_response "$RELEASE_DATA" || return 1
 
-    local ARCH_FILTER=""
-    [[ "$ARCH" == "aarch64" ]] && ARCH_FILTER="arm64"
-    [[ "$ARCH" == "x86_64" ]] && ARCH_FILTER="x86_64"
-    
-    MATCH_TAGS=$(echo "$RELEASE_DATA" | jq -r --arg filter "$ARCH_FILTER" '.[] | select(.tag_name | test($filter; "i")) | .tag_name')
+    arch_filter=$(get_arch_filter)
+    MATCH_TAGS=$(echo "$RELEASE_DATA" | jq -r --arg filter "$arch_filter" --arg profile "$profile" '
+      .[]
+      | select(.tag_name | test("^" + $filter + "-[0-9]"; "i"))
+      | select(if $profile == "max" then (.tag_name | endswith("-max")) else ((.tag_name | endswith("-max")) | not) end)
+      | .tag_name
+    ')
 
     if [[ -z "$MATCH_TAGS" ]]; then
-        echo -e "\033[31m未找到适合当前架构的版本。\033[0m"
+        echo -e "\033[31m未找到适合当前架构的 ${profile_label} 版本。\033[0m"
         return 1
     fi
 
-    echo -e "\033[36m以下为适用于当前架构的版本：\033[0m"
+    echo -e "\033[36m以下为适用于当前架构的 ${profile_label} 版本：\033[0m"
     IFS=$'\n' read -rd '' -a TAG_ARRAY <<<"$MATCH_TAGS"
 
     for i in "${!TAG_ARRAY[@]}"; do
@@ -1149,11 +1234,11 @@ read -r ACTION
 case "$ACTION" in
     1)
         echo -e "\033[1;32m٩(｡•́‿•̀｡)۶ 您选择了安装或更新 BBR v3！\033[0m"
-        install_latest_version
+        select_kernel_profile && install_latest_version "$KERNEL_PROFILE"
         ;;
     2)
         echo -e "\033[1;32m(｡･∀･)ﾉﾞ 您选择了安装指定版本的 BBR！\033[0m"
-        install_specific_version
+        select_kernel_profile && install_specific_version "$KERNEL_PROFILE"
         ;;
     3)
         echo -e "\033[1;32m(｡･ω･｡) 检查是否为 BBR v3...\033[0m"
